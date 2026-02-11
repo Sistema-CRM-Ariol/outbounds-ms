@@ -1,55 +1,55 @@
 generator client {
-  provider = "prisma-client-js"
+    provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
 }
 
 model Expense {
-  id String @id @default(uuid())
+    id String @id @default(uuid())
 
-  code        String  @unique
-  description String?
+    code        String  @unique
+    description String?
 
-  clientId   String
-  clientName String
+    clientId   String
+    clientName String
 
-  items ExpenseItem[]
+    items ExpenseItem[]
 
-  deliveryMethod String // e.g., cash, card, bank transfer
-  outputType     String // e.g., email, print, download
-  placeOfIssue   String // e.g., office, online
+    paymentMethod String
 
-  warehouseId String?
-  warehouseName String?
+    warehouseId   String?
+    warehouseName String?
 
-  total  Float
-  status String @default("pending") // e.g., pending, approved, rejected
+    type OutputType
+
+    total  Float
+    status String @default("pending") // e.g., pending, approved, rejected
 }
 
 model ExpenseItem {
-  id String @id @default(uuid())
+    id String @id @default(uuid())
 
-  expense   Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
-  expenseId String
+    expense   Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+    expenseId String
 
-  productId    String?
-  productName  String?
-  productPrice Float?
-  productTotal Float?
-  productQty   Int?
+    productId    String?
+    productName  String?
+    productPrice Float?
+    productTotal Float?
+    productQty   Int?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
 
-  @@index([expenseId])
+    @@index([expenseId])
 }
 
 enum OutputType {
-  SALE
-  QUOTATION
-  REPLACEMENT
-  CONSIGNMENT
+    VENTA
+    REPOSICION
+    CONSIGNA
+    COTIZACION
 }
