@@ -27,6 +27,9 @@ model Expense {
 
     total  Float
     status String @default("pending") // e.g., pending, approved, rejected
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
 }
 
 model ExpenseItem {

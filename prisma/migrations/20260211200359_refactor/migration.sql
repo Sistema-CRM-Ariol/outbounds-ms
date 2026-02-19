@@ -1,5 +1,5 @@
 -- CreateEnum
-CREATE TYPE "OutputType" AS ENUM ('SALE', 'QUOTATION', 'REPLACEMENT', 'CONSIGNMENT');
+CREATE TYPE "OutputType" AS ENUM ('VENTA', 'REPOSICION', 'CONSIGNA', 'COTIZACION');
 
 -- CreateTable
 CREATE TABLE "Expense" (
@@ -8,11 +8,10 @@ CREATE TABLE "Expense" (
     "description" TEXT,
     "clientId" TEXT NOT NULL,
     "clientName" TEXT NOT NULL,
-    "deliveryMethod" TEXT NOT NULL,
-    "outputType" TEXT NOT NULL,
-    "placeOfIssue" TEXT NOT NULL,
+    "paymentMethod" TEXT NOT NULL,
     "warehouseId" TEXT,
     "warehouseName" TEXT,
+    "type" "OutputType" NOT NULL,
     "total" DOUBLE PRECISION NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'pending',
 
