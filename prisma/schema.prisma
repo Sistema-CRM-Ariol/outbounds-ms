@@ -7,52 +7,84 @@ datasource db {
     url      = env("DATABASE_URL")
 }
 
-model Expense {
-    id String @id @default(uuid())
+enum OutboundOrderStatus {
+    Pendiente
+    Preparando
+    Lista
+    Despachada
+    Completada
+    Cancelada
+}
 
-    code        String  @unique
-    description String?
+enum OutboundOrderType {
+    Venta
+    Cotizacion
+}
 
-    clientId   String
-    clientName String
+model OutboundOrder {
+    id          String            @id @default(uuid())
+    orderNumber String            @unique // OUT-2024-001 o VEN-2024-001
+    orderType   OutboundOrderType // Venta o Cotización
 
-    items ExpenseItem[]
+    issueDate        DateTime  @default(now())
+    expectedDispatch DateTime?
+    actualDispatch   DateTime?
 
-    paymentMethod String
+    // Cliente
+    customerId   String
+    customerName String
 
-    warehouseId   String?
+    // Almacén de origen (de dónde sale)
+    warehouseId   String
     warehouseName String?
 
-    type OutputType
+    // Montos
+    subtotal Decimal @db.Decimal(12, 2)
+    tax      Decimal @default(0) @db.Decimal(12, 2)
+    discount Decimal @default(0) @db.Decimal(12, 2)
+    total    Decimal @db.Decimal(12, 2)
+    currency String  @default("USD")
 
-    total  Float
-    status String @default("pending") // e.g., pending, approved, rejected
+    // Información de envío
+    shippingAddress String?
+    shippingMethod  String? // Retiro, Courier, Delivery
+    carrier         String? // DHL, FedEx, UPS
+    trackingNumber  String?
+
+    // Estado y notas
+    status OutboundOrderStatus @default(Pendiente)
+    notes  String?
+
+    // Auditoría
+    createdBy     String // User ID
+    createdByName String?
+
+    items OutboundOrderItem[]
 
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
+
+    @@map("outbound_orders")
 }
 
-model ExpenseItem {
-    id String @id @default(uuid())
+model OutboundOrderItem {
+    id              Int           @id @default(autoincrement())
+    outboundOrderId String
+    outboundOrder   OutboundOrder @relation(fields: [outboundOrderId], references: [id], onDelete: Cascade)
 
-    expense   Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
-    expenseId String
+    productId            String
+    productName          String
+    productSerialNumber String?
 
-    productId    String?
-    productName  String?
-    productPrice Float?
-    productTotal Float?
-    productQty   Int?
+    quantityOrdered    Int
+    quantityDispatched Int? @default(0)
+
+    unitPrice Decimal @db.Decimal(12, 2)
+    discount  Decimal @default(0) @db.Decimal(12, 2)
+    subtotal  Decimal @db.Decimal(12, 2)
 
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
 
-    @@index([expenseId])
-}
-
-enum OutputType {
-    VENTA
-    REPOSICION
-    CONSIGNA
-    COTIZACION
+    @@map("outbound_order_items")
 }
