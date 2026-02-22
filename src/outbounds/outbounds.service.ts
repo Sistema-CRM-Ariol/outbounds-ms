@@ -17,6 +17,116 @@ export class OutboundsService {
         @Inject(NATS_SERVICE) private readonly natsClient: ClientProxy,
     ) { }
 
+    // ─── Dashboard Stats: Ventas ────────────────────────────────────
+    async getSalesStats() {
+
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const startOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
+        const salesFilter = {
+            orderType: OutboundOrderType.Venta,
+            createdAt: { gte: startOfMonth },
+        };
+
+        const prevMonthSalesFilter = {
+            orderType: OutboundOrderType.Venta,
+            createdAt: { gte: startOfPrevMonth, lt: startOfMonth },
+        };
+
+        const [
+            currentMonthSales,
+            prevMonthSales,
+            salesCount,
+        ] = await Promise.all([
+            this.prisma.outboundOrder.findMany({
+                where: salesFilter,
+                select: { total: true, currency: true },
+            }),
+            this.prisma.outboundOrder.findMany({
+                where: prevMonthSalesFilter,
+                select: { total: true, currency: true },
+            }),
+            this.prisma.outboundOrder.count({
+                where: salesFilter,
+            }),
+        ]);
+
+        // Total facturado este mes por moneda
+        const totalBilledUSD = currentMonthSales
+            .filter(s => s.currency === 'USD')
+            .reduce((sum, s) => sum + Number(s.total), 0);
+
+        const totalBilledBOB = currentMonthSales
+            .filter(s => s.currency === 'BOB')
+            .reduce((sum, s) => sum + Number(s.total), 0);
+
+        const totalBilledThisMonth = totalBilledUSD + totalBilledBOB;
+
+        // Promedio por venta
+        const avgPerSale = salesCount > 0
+            ? parseFloat((totalBilledThisMonth / salesCount).toFixed(2))
+            : 0;
+
+        // Crecimiento vs mes anterior
+        const totalBilledPrevMonth = prevMonthSales.reduce(
+            (sum, s) => sum + Number(s.total), 0,
+        );
+
+        const growthVsPrevMonth = totalBilledPrevMonth > 0
+            ? parseFloat((((totalBilledThisMonth - totalBilledPrevMonth) / totalBilledPrevMonth) * 100).toFixed(2))
+            : 0;
+
+        return {
+            totalBilledUSD: parseFloat(totalBilledUSD.toFixed(2)),
+            totalBilledBOB: parseFloat(totalBilledBOB.toFixed(2)),
+            avgPerSale,
+            salesCount,
+            growthVsPrevMonth,
+        };
+    }
+
+    // ─── Dashboard Stats: Cotizaciones ──────────────────────────────
+    async getQuotationsStats() {
+
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+        const quotationType = OutboundOrderType.Cotizacion;
+
+        const [totalGenerated, pendingQuotations, monthQuotations] = await Promise.all([
+            this.prisma.outboundOrder.count({
+                where: {
+                    orderType: quotationType,
+                    createdAt: { gte: startOfMonth },
+                },
+            }),
+            this.prisma.outboundOrder.count({
+                where: {
+                    orderType: quotationType,
+                    status: OutboundOrderStatus.Pendiente,
+                },
+            }),
+            this.prisma.outboundOrder.findMany({
+                where: {
+                    orderType: quotationType,
+                    createdAt: { gte: startOfMonth },
+                },
+                select: { total: true },
+            }),
+        ]);
+
+        const totalQuotedAmount = monthQuotations.reduce(
+            (sum, q) => sum + Number(q.total), 0,
+        );
+
+        return {
+            totalGenerated,
+            pending: pendingQuotations,
+            totalQuotedAmount: parseFloat(totalQuotedAmount.toFixed(2)),
+        };
+    }
+
     // ─── Crear Venta ────────────────────────────────────────────────
     async createSale(createOutboundDto: CreateOutboundDto) {
         const { items, ...outboundData } = createOutboundDto;

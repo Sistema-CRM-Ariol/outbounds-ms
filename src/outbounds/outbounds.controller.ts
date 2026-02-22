@@ -9,6 +9,18 @@ import { OutboundOrderStatus } from './types/outbound-order-status.type';
 export class OutboundsController {
     constructor(private readonly outboundsService: OutboundsService) { }
 
+    // ─── Dashboard Stats ────────────────────────────────────────────
+
+    @MessagePattern('outbounds.sales.stats')
+    getSalesStats() {
+        return this.outboundsService.getSalesStats();
+    }
+
+    @MessagePattern('outbounds.quotations.stats')
+    getQuotationsStats() {
+        return this.outboundsService.getQuotationsStats();
+    }
+
     // ─── Ventas ─────────────────────────────────────────────────────
 
     @MessagePattern('outbounds.sales.create')
