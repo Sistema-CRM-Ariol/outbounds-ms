@@ -400,4 +400,115 @@ export class OutboundsService {
             },
         };
     }
+
+    async getSalesDashboard() {
+        const now = new Date();
+        const twelveMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+
+        // Ventas de los últimos 12 meses
+        const recentSales = await this.prisma.outboundOrder.findMany({
+            where: {
+                orderType: OutboundOrderType.Venta,
+                createdAt: { gte: twelveMonthsAgo },
+            },
+            select: {
+                total: true, currency: true,
+                customerId: true, customerName: true,
+                createdAt: true,
+                items: { select: { productId: true, productName: true, quantityOrdered: true } },
+            },
+        });
+
+        // Chart mensual de 12 meses
+        const monthlyMap: Record<string, { month: string; totalUSD: number; totalBOB: number; count: number }> = {};
+        for (let i = 11; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            monthlyMap[key] = { month: key, totalUSD: 0, totalBOB: 0, count: 0 };
+        }
+        for (const sale of recentSales) {
+            const key = `${sale.createdAt.getFullYear()}-${String(sale.createdAt.getMonth() + 1).padStart(2, '0')}`;
+            if (monthlyMap[key]) {
+                monthlyMap[key].count++;
+                if (sale.currency === 'USD') monthlyMap[key].totalUSD += Number(sale.total);
+                else monthlyMap[key].totalBOB += Number(sale.total);
+            }
+        }
+        const twelveMonthChart = Object.values(monthlyMap).map(m => ({
+            ...m,
+            totalUSD: parseFloat(m.totalUSD.toFixed(2)),
+            totalBOB: parseFloat(m.totalBOB.toFixed(2)),
+        }));
+
+        // Top 10 clientes por volumen total (histórico)
+        const allSales = await this.prisma.outboundOrder.findMany({
+            where: { orderType: OutboundOrderType.Venta },
+            select: { customerId: true, customerName: true, total: true },
+        });
+        const clientTotals: Record<string, { customerId: string; customerName: string; total: number }> = {};
+        for (const sale of allSales) {
+            if (!clientTotals[sale.customerId]) {
+                clientTotals[sale.customerId] = { customerId: sale.customerId, customerName: sale.customerName, total: 0 };
+            }
+            clientTotals[sale.customerId].total += Number(sale.total);
+        }
+        const topClients = Object.values(clientTotals)
+            .sort((a, b) => b.total - a.total)
+            .slice(0, 10)
+            .map(c => ({ ...c, total: parseFloat(c.total.toFixed(2)) }));
+
+        // Best sellers de los últimos 12 meses (por cantidad pedida)
+        const productTotals: Record<string, { productId: string; productName: string; totalQty: number }> = {};
+        for (const sale of recentSales) {
+            for (const item of sale.items) {
+                if (!productTotals[item.productId]) {
+                    productTotals[item.productId] = { productId: item.productId, productName: item.productName, totalQty: 0 };
+                }
+                productTotals[item.productId].totalQty += item.quantityOrdered;
+            }
+        }
+        const bestSellers = Object.values(productTotals)
+            .sort((a, b) => b.totalQty - a.totalQty)
+            .slice(0, 10);
+
+        return { twelveMonthChart, topClients, bestSellers };
+    }
+
+    async getQuotationsDashboard() {
+        const now = new Date();
+        const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+
+        const recentQuotations = await this.prisma.outboundOrder.findMany({
+            where: {
+                orderType: OutboundOrderType.Cotizacion,
+                createdAt: { gte: sixMonthsAgo },
+            },
+            select: { total: true, status: true, createdAt: true },
+        });
+
+        // Chart mensual de 6 meses con tasa de conversión
+        const monthlyMap: Record<string, { month: string; quotations: number; converted: number; totalAmount: number }> = {};
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            monthlyMap[key] = { month: key, quotations: 0, converted: 0, totalAmount: 0 };
+        }
+        for (const q of recentQuotations) {
+            const key = `${q.createdAt.getFullYear()}-${String(q.createdAt.getMonth() + 1).padStart(2, '0')}`;
+            if (monthlyMap[key]) {
+                monthlyMap[key].quotations++;
+                monthlyMap[key].totalAmount += Number(q.total);
+                if (q.status === OutboundOrderStatus.Completada) monthlyMap[key].converted++;
+            }
+        }
+        const sixMonthChart = Object.values(monthlyMap).map(m => ({
+            ...m,
+            conversionRate: m.quotations > 0
+                ? parseFloat(((m.converted / m.quotations) * 100).toFixed(2))
+                : 0,
+            totalAmount: parseFloat(m.totalAmount.toFixed(2)),
+        }));
+
+        return { sixMonthChart };
+    }
 }

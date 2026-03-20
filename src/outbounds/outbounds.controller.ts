@@ -16,9 +16,19 @@ export class OutboundsController {
         return this.outboundsService.getSalesStats();
     }
 
+    @MessagePattern('outbounds.sales.dashboard')
+    getSalesDashboard() {
+        return this.outboundsService.getSalesDashboard();
+    }
+
     @MessagePattern('outbounds.quotations.stats')
     getQuotationsStats() {
         return this.outboundsService.getQuotationsStats();
+    }
+
+    @MessagePattern('outbounds.quotations.dashboard')
+    getQuotationsDashboard() {
+        return this.outboundsService.getQuotationsDashboard();
     }
 
     // ─── Ventas ─────────────────────────────────────────────────────
