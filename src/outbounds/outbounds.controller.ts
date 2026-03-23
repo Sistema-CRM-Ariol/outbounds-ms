@@ -71,4 +71,9 @@ export class OutboundsController {
     changeStatus(@Payload() payload: { orderNumber: string; status: OutboundOrderStatus }) {
         return this.outboundsService.changeStatus(payload.orderNumber, payload.status);
     }
+
+    @MessagePattern('outbounds.customers.analytics')
+    getCustomerAnalytics(@Payload() payload: { customerId: string }) {
+        return this.outboundsService.getCustomerAnalytics(payload.customerId);
+    }
 }

@@ -511,4 +511,139 @@ export class OutboundsService {
 
         return { sixMonthChart };
     }
+
+    async getCustomerAnalytics(customerId: string) {
+        const outboundOrders = await this.prisma.outboundOrder.findMany({
+            where: { customerId },
+            orderBy: { createdAt: 'asc' },
+            select: {
+                id: true,
+                orderType: true,
+                status: true,
+                total: true,
+                currency: true,
+                shippingMethod: true,
+                createdAt: true,
+                items: {
+                    select: {
+                        productId: true,
+                        productName: true,
+                        quantityOrdered: true,
+                        unitPrice: true,
+                    },
+                },
+            },
+        });
+
+        const nonCancelled = outboundOrders.filter(
+            (order) => order.status !== OutboundOrderStatus.Cancelada,
+        );
+
+        const sales = nonCancelled.filter(
+            (order) => order.orderType === OutboundOrderType.Venta,
+        );
+
+        const quotations = nonCancelled.filter(
+            (order) => order.orderType === OutboundOrderType.Cotizacion,
+        );
+
+        const now = new Date();
+        const startOf30d = new Date(now);
+        startOf30d.setDate(now.getDate() - 30);
+
+        const startOf90d = new Date(now);
+        startOf90d.setDate(now.getDate() - 90);
+
+        const totalSpent = sales.reduce((acc, sale) => acc + Number(sale.total), 0);
+        const averageTicket = sales.length > 0 ? totalSpent / sales.length : 0;
+
+        const lastOrderDate = nonCancelled.length > 0
+            ? nonCancelled[nonCancelled.length - 1].createdAt
+            : null;
+
+        const ordersLast30d = nonCancelled.filter((order) => order.createdAt >= startOf30d).length;
+        const ordersLast90d = nonCancelled.filter((order) => order.createdAt >= startOf90d).length;
+
+        const monthlyFrequencyMap: Record<string, number> = {};
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            monthlyFrequencyMap[key] = 0;
+        }
+
+        for (const order of nonCancelled) {
+            const key = `${order.createdAt.getFullYear()}-${String(order.createdAt.getMonth() + 1).padStart(2, '0')}`;
+            if (monthlyFrequencyMap[key] !== undefined) {
+                monthlyFrequencyMap[key] += 1;
+            }
+        }
+
+        const shippingMethodCount: Record<string, number> = {};
+        const productCountByUnits: Record<string, { productId: string; productName: string; units: number; amount: number }> = {};
+
+        for (const sale of sales) {
+            if (sale.shippingMethod) {
+                shippingMethodCount[sale.shippingMethod] = (shippingMethodCount[sale.shippingMethod] ?? 0) + 1;
+            }
+
+            for (const item of sale.items) {
+                if (!productCountByUnits[item.productId]) {
+                    productCountByUnits[item.productId] = {
+                        productId: item.productId,
+                        productName: item.productName,
+                        units: 0,
+                        amount: 0,
+                    };
+                }
+
+                const units = item.quantityOrdered;
+                const amount = Number(item.unitPrice) * units;
+
+                productCountByUnits[item.productId].units += units;
+                productCountByUnits[item.productId].amount += amount;
+            }
+        }
+
+        const topProducts = Object.values(productCountByUnits)
+            .sort((a, b) => b.units - a.units)
+            .slice(0, 5)
+            .map((p) => ({
+                ...p,
+                amount: Number(p.amount.toFixed(2)),
+            }));
+
+        const currencyCount = sales.reduce((acc, sale) => {
+            acc[sale.currency] = (acc[sale.currency] ?? 0) + 1;
+            return acc;
+        }, {} as Record<string, number>);
+
+        const preferredCurrency = Object.entries(currencyCount)
+            .sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+        const preferredShippingMethod = Object.entries(shippingMethodCount)
+            .sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+        return {
+            analytics: {
+                summary: {
+                    totalOrders: nonCancelled.length,
+                    totalSales: sales.length,
+                    totalQuotations: quotations.length,
+                    totalSpent: Number(totalSpent.toFixed(2)),
+                    averageTicket: Number(averageTicket.toFixed(2)),
+                },
+                frequency: {
+                    ordersLast30d,
+                    ordersLast90d,
+                    lastOrderDate,
+                    monthly: Object.entries(monthlyFrequencyMap).map(([month, orders]) => ({ month, orders })),
+                },
+                preferences: {
+                    preferredCurrency,
+                    preferredShippingMethod,
+                    topProducts,
+                },
+            }
+        };
+    }
 }
