@@ -55,6 +55,9 @@ model OutboundOrder {
     status OutboundOrderStatus @default(Pendiente)
     notes  String?
 
+    // Si la venta proviene de cotización, guardamos la referencia de origen
+    sourceQuotationOrderNumber String?
+
     // Auditoría
     createdBy     String // User ID
     createdByName String?
@@ -63,6 +66,8 @@ model OutboundOrder {
 
     createdAt DateTime @default(now())
     updatedAt DateTime @updatedAt
+
+    @@index([sourceQuotationOrderNumber])
 
     @@map("outbound_orders")
 }

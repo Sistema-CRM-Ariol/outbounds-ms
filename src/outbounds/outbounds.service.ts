@@ -1,11 +1,14 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, HttpStatus } from '@nestjs/common';
 import { CreateOutboundDto } from './dto/create-outbound.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { FilterPaginationDto } from 'src/common/dto/filter-pagination.dto';
 import { ClientProxy, RpcException } from '@nestjs/microservices';
+import { firstValueFrom } from 'rxjs';
 import { NATS_SERVICE } from 'src/config/services';
 import { OutboundOrderStatus } from './types/outbound-order-status.type';
 import { OutboundOrderType } from './types/outbound-order-type.type';
+
+type OutboundInventoryAction = 'RESERVAR' | 'LIBERAR' | 'CONSUMIR' | 'REVERTIR';
 
 @Injectable()
 export class OutboundsService {
@@ -145,6 +148,33 @@ export class OutboundsService {
             include: { items: true },
         });
 
+        try {
+            await this.applyInventoryOperation({
+                action: 'CONSUMIR',
+                operationType: 'VENTA',
+                referenceId: newSale.orderNumber,
+                warehouseId: newSale.warehouseId,
+                warehouseName: newSale.warehouseName,
+                sourceService: 'outbounds-ms',
+                userId: newSale.createdBy,
+                userName: newSale.createdByName,
+                notes: 'Consumo de stock por generacion de venta',
+                items: newSale.items.map(item => ({
+                    productId: item.productId,
+                    productName: item.productName,
+                    productCode: item.productSerialNumber,
+                    quantity: item.quantityOrdered,
+                    consumeFromReservation: false,
+                })),
+            });
+        } catch (error) {
+            await this.prisma.outboundOrder.delete({
+                where: { id: newSale.id },
+            });
+
+            throw error;
+        }
+
         return {
             message: 'Venta creada correctamente',
             outbound: newSale,
@@ -168,6 +198,34 @@ export class OutboundsService {
             },
             include: { items: true },
         });
+
+        if (newQuotation.status === OutboundOrderStatus.Pendiente) {
+            try {
+                await this.applyInventoryOperation({
+                    action: 'RESERVAR',
+                    operationType: 'COTIZACION',
+                    referenceId: newQuotation.orderNumber,
+                    warehouseId: newQuotation.warehouseId,
+                    warehouseName: newQuotation.warehouseName,
+                    sourceService: 'outbounds-ms',
+                    userId: newQuotation.createdBy,
+                    userName: newQuotation.createdByName,
+                    notes: 'Reserva de stock por cotizacion en estado pendiente',
+                    items: newQuotation.items.map(item => ({
+                        productId: item.productId,
+                        productName: item.productName,
+                        productCode: item.productSerialNumber,
+                        quantity: item.quantityOrdered,
+                    })),
+                });
+            } catch (error) {
+                await this.prisma.outboundOrder.delete({
+                    where: { id: newQuotation.id },
+                });
+
+                throw error;
+            }
+        }
 
         return {
             message: 'Cotización creada correctamente',
@@ -214,6 +272,17 @@ export class OutboundsService {
 
         const existing = await this.prisma.outboundOrder.findUnique({
             where: { orderNumber },
+            include: {
+                items: {
+                    select: {
+                        productId: true,
+                        productName: true,
+                        productSerialNumber: true,
+                        quantityOrdered: true,
+                        quantityDispatched: true,
+                    },
+                },
+            },
         });
 
         if (!existing) {
@@ -223,27 +292,103 @@ export class OutboundsService {
             });
         }
 
+        if (existing.status === newStatus) {
+            return {
+                message: 'El estado ya se encuentra actualizado',
+                outbound: existing,
+            };
+        }
+
         const updatedOutbound = await this.prisma.outboundOrder.update({
             where: { orderNumber },
             data: { status: newStatus },
             include: {
                 items: {
-                    select: { productId: true, quantityDispatched: true, quantityOrdered: true },
+                    select: {
+                        productId: true,
+                        productName: true,
+                        productSerialNumber: true,
+                        quantityDispatched: true,
+                        quantityOrdered: true,
+                    },
                 },
             },
         });
 
-        // Al completar una venta, descontar stock del inventario
+        // Al completar una venta directa, descontar stock del inventario
         if (newStatus === OutboundOrderStatus.Completada && existing.orderType === OutboundOrderType.Venta) {
-            this.natsClient.emit('inventories.updateSock', {
-                warehouseId: updatedOutbound.warehouseId,
-                items: updatedOutbound.items.map(item => ({
+            const isConvertedSale = Boolean((existing as any).sourceQuotationOrderNumber);
+
+            if (!isConvertedSale) {
+                await this.applyInventoryOperation({
+                    action: 'CONSUMIR',
+                    operationType: 'VENTA',
+                    referenceId: updatedOutbound.orderNumber,
+                    warehouseId: updatedOutbound.warehouseId,
+                    warehouseName: updatedOutbound.warehouseName,
+                    sourceService: 'outbounds-ms',
+                    userId: updatedOutbound.createdBy,
+                    userName: updatedOutbound.createdByName,
+                    notes: 'Consumo de stock por venta completada',
+                    items: updatedOutbound.items.map(item => ({
+                        productId: item.productId,
+                        productName: item.productName,
+                        productCode: item.productSerialNumber,
+                        quantity: item.quantityDispatched ?? item.quantityOrdered,
+                        consumeFromReservation: false,
+                    })),
+                });
+
+                this.logger.log(`Stock descontado para orden ${orderNumber}`);
+            }
+        }
+
+        if (
+            newStatus === OutboundOrderStatus.Cancelada
+            && existing.orderType === OutboundOrderType.Cotizacion
+            && existing.status !== OutboundOrderStatus.Completada
+        ) {
+            await this.applyInventoryOperation({
+                action: 'LIBERAR',
+                operationType: 'COTIZACION',
+                referenceId: existing.orderNumber,
+                warehouseId: existing.warehouseId,
+                warehouseName: existing.warehouseName,
+                sourceService: 'outbounds-ms',
+                userId: existing.createdBy,
+                userName: existing.createdByName,
+                notes: 'Liberacion de reserva por cancelacion de cotizacion',
+                items: existing.items.map(item => ({
                     productId: item.productId,
-                    quantity: -(item.quantityDispatched ?? item.quantityOrdered), // negativo para descontar
+                    productName: item.productName,
+                    productCode: item.productSerialNumber,
+                    quantity: item.quantityOrdered,
                 })),
             });
+        }
 
-            this.logger.log(`Stock descontado para orden ${orderNumber}`);
+        if (newStatus === OutboundOrderStatus.Cancelada && existing.orderType === OutboundOrderType.Venta) {
+            const isConvertedSale = Boolean((existing as any).sourceQuotationOrderNumber);
+
+            if (isConvertedSale) {
+                await this.applyInventoryOperation({
+                    action: 'REVERTIR',
+                    operationType: 'VENTA',
+                    referenceId: existing.orderNumber,
+                    warehouseId: existing.warehouseId,
+                    warehouseName: existing.warehouseName,
+                    sourceService: 'outbounds-ms',
+                    userId: existing.createdBy,
+                    userName: existing.createdByName,
+                    notes: 'Reversa de stock por cancelacion de venta convertida',
+                    items: existing.items.map(item => ({
+                        productId: item.productId,
+                        productName: item.productName,
+                        productCode: item.productSerialNumber,
+                        quantity: item.quantityOrdered,
+                    })),
+                });
+            }
         }
 
         return {
@@ -290,6 +435,7 @@ export class OutboundsService {
                 data: {
                     orderNumber: saleOrderNumber,
                     orderType: OutboundOrderType.Venta,
+                    sourceQuotationOrderNumber: orderNumber,
                     issueDate: new Date(),
                     expectedDispatch: quotation.expectedDispatch,
                     customerId: quotation.customerId,
@@ -333,11 +479,88 @@ export class OutboundsService {
             return sale;
         });
 
+        await this.applyInventoryOperation({
+            action: 'CONSUMIR',
+            operationType: 'VENTA',
+            referenceId: newSale.orderNumber,
+            warehouseId: newSale.warehouseId,
+            warehouseName: newSale.warehouseName,
+            sourceService: 'outbounds-ms',
+            userId: newSale.createdBy,
+            userName: newSale.createdByName,
+            notes: `Consumo de reserva por conversion de cotizacion ${orderNumber}`,
+            items: newSale.items.map(item => ({
+                productId: item.productId,
+                productName: item.productName,
+                productCode: item.productSerialNumber,
+                quantity: item.quantityOrdered,
+                consumeFromReservation: true,
+            })),
+        });
+
         return {
             message: `Cotización ${orderNumber} convertida a venta ${saleOrderNumber} exitosamente`,
             originalQuotation: orderNumber,
             sale: newSale,
         };
+    }
+
+    private async applyInventoryOperation(payload: {
+        action: OutboundInventoryAction;
+        operationType: 'COTIZACION' | 'VENTA';
+        referenceId: string;
+        warehouseId: string;
+        warehouseName?: string | null;
+        sourceService: string;
+        userId?: string;
+        userName?: string | null;
+        notes?: string | null;
+        items: Array<{
+            productId: string;
+            productName?: string;
+            productCode?: string | null;
+            quantity: number;
+            consumeFromReservation?: boolean;
+        }>;
+    }) {
+        const items = payload.items
+            .map(item => ({
+                ...item,
+                quantity: Math.trunc(Math.abs(Number(item.quantity))),
+            }))
+            .filter(item => Number.isFinite(item.quantity) && item.quantity > 0);
+
+        if (items.length === 0) {
+            return;
+        }
+
+        try {
+            await firstValueFrom(
+                this.natsClient.send('inventories.operations.apply', {
+                    action: payload.action,
+                    operationType: payload.operationType,
+                    referenceId: payload.referenceId,
+                    referenceType: payload.operationType,
+                    warehouseId: payload.warehouseId,
+                    warehouseName: payload.warehouseName ?? undefined,
+                    sourceService: payload.sourceService,
+                    userId: payload.userId ?? 'system',
+                    userName: payload.userName ?? 'system',
+                    notes: payload.notes ?? undefined,
+                    items,
+                }),
+            );
+        } catch (error) {
+            const typedError = error as any;
+
+            throw new RpcException({
+                status: HttpStatus.BAD_REQUEST,
+                message:
+                    typedError?.message
+                    ?? typedError?.response?.message
+                    ?? 'No se pudo aplicar la operacion de inventario',
+            });
+        }
     }
 
     // ─── Método privado para listar por tipo ────────────────────────
